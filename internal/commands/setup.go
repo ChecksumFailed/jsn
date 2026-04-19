@@ -2,6 +2,7 @@ package commands
 
 import (
 	"bufio"
+	"context"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -16,6 +17,8 @@ import (
 	"github.com/jacebenson/jsn/internal/auth"
 	"github.com/jacebenson/jsn/internal/config"
 	"github.com/jacebenson/jsn/internal/output"
+	"github.com/jacebenson/jsn/internal/sdk"
+	"github.com/jacebenson/jsn/internal/tui"
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 )
@@ -67,9 +70,136 @@ func runSetup(cmd *cobra.Command, app *appctx.App) error {
 		return err
 	}
 
-	// Step 3: Authentication
-	if err := setupAuth(cmd, app, instanceURL, profileName); err != nil {
+	// Step 3: Save Location and Auth
+	fmt.Println("Step 3: Save Location")
+	fmt.Println()
+
+	locationItems := []tui.PickerItem{
+		{ID: "local", Title: "Local", Description: ".servicenow/config.json — project-specific"},
+		{ID: "global", Title: "Global", Description: "~/.config/servicenow/config.json — system-wide"},
+	}
+	locationChoice, err := tui.Pick("Save location", locationItems)
+	if err != nil {
 		return err
+	}
+	if locationChoice == nil {
+		return nil
+	}
+	configScope := locationChoice.ID
+	fmt.Println()
+
+	authItems := []tui.PickerItem{
+		{ID: "basic", Title: "Basic Auth", Description: "username/password"},
+		{ID: "oauth", Title: "OAuth 2.0", Description: "browser-based, most secure"},
+		{ID: "gck", Title: "g_ck Token", Description: "glide cookie from browser"},
+	}
+	authChoice, err := tui.Pick("Authentication method", authItems)
+	if err != nil {
+		return err
+	}
+	if authChoice == nil {
+		return nil
+	}
+	authMethod := authChoice.ID
+	fmt.Println()
+
+	authManager := app.Auth.(*auth.Manager)
+
+	for {
+		// Run the chosen auth flow
+		authErr := runAuthMethod(cmd, app, authMethod, configScope, instanceURL, profileName)
+		if authErr != nil {
+			fmt.Println()
+			fmt.Printf("  ⚠ %v\n", authErr)
+			fmt.Println()
+
+			retryItems := []tui.PickerItem{
+				{ID: "retry", Title: "Try again", Description: "re-enter credentials for " + authMethod},
+				{ID: "change", Title: "Different auth method", Description: "switch to another method"},
+				{ID: "start-over", Title: "Start over", Description: "restart setup from the beginning"},
+				{ID: "quit", Title: "Quit", Description: "exit setup"},
+			}
+			choice, pickErr := tui.Pick("Authentication failed", retryItems)
+			if pickErr != nil || choice == nil || choice.ID == "quit" {
+				return nil
+			}
+			if choice.ID == "start-over" {
+				return runSetup(cmd, app)
+			}
+			if choice.ID == "change" {
+				fmt.Println()
+				newChoice, pickErr := tui.Pick("Authentication method", authItems)
+				if pickErr != nil || newChoice == nil {
+					return nil
+				}
+				authMethod = newChoice.ID
+				fmt.Println()
+			}
+			continue
+		}
+
+		// Verify authentication by fetching current user
+		fmt.Printf("  Verifying authentication against %s...\n", instanceURL)
+		testClient := sdk.NewClient(instanceURL, func() (string, string, string) {
+			creds, err := authManager.GetCredentials()
+			if err != nil {
+				return "", "", "basic"
+			}
+			profile := cfg.GetActiveProfile()
+			am := ""
+			if profile != nil {
+				am = profile.AuthMethod
+			}
+			if creds.AuthMethod != "" {
+				am = creds.AuthMethod
+			}
+			switch am {
+			case "oauth":
+				return creds.AccessToken, "", "oauth"
+			case "gck":
+				return creds.Token, creds.Cookies, "gck"
+			default:
+				return creds.Token, creds.Username, "basic"
+			}
+		})
+
+		user, userErr := testClient.GetCurrentUser(context.Background())
+		if userErr != nil {
+			fmt.Println()
+			fmt.Printf("  ⚠ Verification failed: %v\n", userErr)
+			fmt.Println()
+
+			retryItems := []tui.PickerItem{
+				{ID: "retry", Title: "Try again", Description: "re-enter credentials for " + authMethod},
+				{ID: "change", Title: "Different auth method", Description: "switch to another method"},
+				{ID: "continue", Title: "Continue anyway", Description: "credentials saved, verify later"},
+				{ID: "quit", Title: "Quit", Description: "exit setup"},
+			}
+			choice, pickErr := tui.Pick("Could not verify authentication", retryItems)
+			if pickErr != nil || choice == nil || choice.ID == "quit" {
+				return nil
+			}
+			if choice.ID == "continue" {
+				break
+			}
+			if choice.ID == "change" {
+				fmt.Println()
+				newChoice, pickErr := tui.Pick("Authentication method", authItems)
+				if pickErr != nil || newChoice == nil {
+					return nil
+				}
+				authMethod = newChoice.ID
+				fmt.Println()
+			}
+			continue
+		}
+
+		userName := user.Name
+		if userName == "" {
+			userName = user.UserName
+		}
+		fmt.Printf("  ✓ Authenticated as: %s\n", userName)
+		break
 	}
 
 	// Show completion
@@ -174,65 +304,9 @@ func setupProfileName(cfg *config.Config) (string, error) {
 	return profileName, nil
 }
 
-func setupAuth(cmd *cobra.Command, app *appctx.App, instanceURL, profileName string) error {
-	fmt.Println("Step 3: Save Location")
-	fmt.Println()
-
+func runAuthMethod(cmd *cobra.Command, app *appctx.App, authMethod, configScope, instanceURL, profileName string) error {
 	reader := bufio.NewReader(os.Stdin)
 	authManager := app.Auth.(*auth.Manager)
-
-	// Ask where to save config
-	fmt.Println("Where should this configuration be saved?")
-	fmt.Println("  1) Local (.servicenow/config.json) - project-specific [default]")
-	fmt.Println("  2) Global (~/.config/servicenow/config.json) - system-wide")
-	fmt.Println()
-
-	var configScope string
-	for {
-		fmt.Print("Location [1]: ")
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-
-		if input == "" || input == "1" {
-			configScope = "local"
-			break
-		} else if input == "2" {
-			configScope = "global"
-			break
-		} else {
-			fmt.Println("Please enter 1 or 2.")
-		}
-	}
-	fmt.Println()
-
-	// Ask which auth method to use
-	fmt.Println("Choose authentication method:")
-	fmt.Println("  1) Basic Auth (username/password)")
-	fmt.Println("  2) OAuth 2.0 (browser-based, most secure) [default]")
-	fmt.Println("  3) g_ck Token (glide cookie)")
-	fmt.Println()
-
-	var authMethod string
-	for {
-		fmt.Print("Method [2]: ")
-		input, _ := reader.ReadString('\n')
-		input = strings.TrimSpace(input)
-
-		if input == "" || input == "2" {
-			authMethod = "oauth"
-			break
-		} else if input == "1" {
-			authMethod = "basic"
-			break
-		} else if input == "3" {
-			authMethod = "gck"
-			break
-		} else {
-			fmt.Println("Please enter 1, 2, or 3.")
-		}
-	}
-	fmt.Println()
-
 	cfg := app.Config.(*config.Config)
 
 	switch authMethod {
@@ -275,7 +349,7 @@ func setupBasicAuth(reader *bufio.Reader, cfg *config.Config, authManager *auth.
 				password = strings.TrimSpace(input)
 			} else {
 				password = string(bytePassword)
-				fmt.Println() // Newline after hidden input
+				fmt.Println(" ********")
 			}
 		} else {
 			// Non-terminal mode - prompt without "Password: " prefix since it was already printed
@@ -299,9 +373,8 @@ func setupBasicAuth(reader *bufio.Reader, cfg *config.Config, authManager *auth.
 	}
 
 	cfg.Profiles[profileName] = profile
-	if cfg.DefaultProfile == "" {
-		cfg.DefaultProfile = profileName
-	}
+	// Always set the default profile to the newly created one during setup
+	cfg.DefaultProfile = profileName
 
 	// Save to appropriate location
 	var saveErr error
@@ -349,9 +422,8 @@ func setupOAuthAuth(cfg *config.Config, authManager *auth.Manager, instanceURL, 
 	}
 
 	cfg.Profiles[profileName] = profile
-	if cfg.DefaultProfile == "" {
-		cfg.DefaultProfile = profileName
-	}
+	// Always set the default profile to the newly created one during setup
+	cfg.DefaultProfile = profileName
 
 	// Save to appropriate location
 	var saveErr error
@@ -365,6 +437,7 @@ func setupOAuthAuth(cfg *config.Config, authManager *auth.Manager, instanceURL, 
 	}
 
 	// Store credentials
+	creds.AuthMethod = "oauth"
 	if err := authManager.StoreCredentials(creds); err != nil {
 		return output.ErrAuth(fmt.Sprintf("failed to store credentials: %v", err))
 	}
@@ -387,27 +460,17 @@ func setupGCKAuth(reader *bufio.Reader, cfg *config.Config, authManager *auth.Ma
 	fmt.Println("  3. Filter for API requests (type 'api' in the filter)")
 	fmt.Println("  4. Right-click any api/now/* request")
 	fmt.Println("  5. Select: Copy → Copy as cURL")
-	fmt.Println("  6. Paste the command below and press Ctrl+D")
-	fmt.Println()
-	fmt.Println("(Press Ctrl+D when done, or Ctrl+C to cancel)")
+	fmt.Println("  6. Paste the command below and press Enter")
 	fmt.Println()
 
-	// Read all stdin until EOF
-	var curlLines []string
-	for {
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			// EOF reached
-			break
-		}
-		curlLines = append(curlLines, input)
+	curlCmd, err := readCurlHidden(reader)
+	if err != nil {
+		return output.ErrUsage(err.Error())
 	}
 
-	if len(curlLines) == 0 {
+	if curlCmd == "" {
 		return output.ErrUsage("no input received")
 	}
-
-	curlCmd := strings.TrimSpace(strings.Join(curlLines, " "))
 
 	// Parse the curl command
 	token, cookies, err := parseCurlForAuth(curlCmd)
@@ -429,9 +492,8 @@ func setupGCKAuth(reader *bufio.Reader, cfg *config.Config, authManager *auth.Ma
 	}
 
 	cfg.Profiles[profileName] = profile
-	if cfg.DefaultProfile == "" {
-		cfg.DefaultProfile = profileName
-	}
+	// Always set the default profile to the newly created one during setup
+	cfg.DefaultProfile = profileName
 
 	// Save to appropriate location
 	var saveErr error
@@ -447,7 +509,7 @@ func setupGCKAuth(reader *bufio.Reader, cfg *config.Config, authManager *auth.Ma
 	// Store credentials
 	creds := &auth.Credentials{
 		Token:     token,
-		Cookies:   cookies,
+		Cookies:   filterServiceNowCookies(cookies),
 		CreatedAt: 0,
 	}
 
@@ -456,7 +518,7 @@ func setupGCKAuth(reader *bufio.Reader, cfg *config.Config, authManager *auth.Ma
 	}
 
 	fmt.Println()
-	fmt.Println("  ✓ Authentication saved.")
+	fmt.Println("  ✓ Credentials saved.")
 	fmt.Println()
 
 	return nil
@@ -521,6 +583,22 @@ func pathInPATH(dir string) bool {
 		}
 	}
 	return false
+}
+
+// joinCurlLines joins multi-line curl input, stripping shell line continuations.
+func joinCurlLines(lines []string) string {
+	var sb strings.Builder
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, " \t\r\n")
+		if strings.HasSuffix(trimmed, "\\") {
+			sb.WriteString(strings.TrimSuffix(trimmed, "\\"))
+			sb.WriteByte(' ')
+		} else {
+			sb.WriteString(trimmed)
+			sb.WriteByte(' ')
+		}
+	}
+	return strings.TrimSpace(sb.String())
 }
 
 // parseCurlForAuth extracts auth info from a curl command

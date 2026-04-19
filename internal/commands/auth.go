@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/jacebenson/jsn/internal/appctx"
@@ -16,6 +17,8 @@ import (
 	"github.com/jacebenson/jsn/internal/output"
 	"github.com/jacebenson/jsn/internal/sdk"
 	"github.com/spf13/cobra"
+	"golang.org/x/sys/unix"
+	"golang.org/x/term"
 )
 
 func NewAuthCommand() *cobra.Command {
@@ -173,8 +176,19 @@ To get auth from curl:
 
 				if password == "" {
 					fmt.Print("Password: ")
-					p, _ := reader.ReadString('\n')
-					password = strings.TrimSpace(p)
+					if term.IsTerminal(int(syscall.Stdin)) {
+						bytePass, err := term.ReadPassword(int(syscall.Stdin))
+						if err == nil {
+							password = string(bytePass)
+							fmt.Println(" ********")
+						} else {
+							p, _ := reader.ReadString('\n')
+							password = strings.TrimSpace(p)
+						}
+					} else {
+						p, _ := reader.ReadString('\n')
+						password = strings.TrimSpace(p)
+					}
 				}
 
 				creds := &auth.Credentials{
@@ -206,23 +220,18 @@ To get auth from curl:
 				fmt.Println("  2. Open DevTools (F12) → Network tab")
 				fmt.Println("  3. Filter for API requests (type 'api' in the filter)")
 				fmt.Println("  4. Right-click any api/now/* request → Copy → Copy as cURL")
-				fmt.Println("  5. Paste below and press Enter, then Ctrl+D")
+				fmt.Println("  5. Paste below and press Enter")
 				fmt.Println()
 
-				var curlLines []string
-				for {
-					line, err := reader.ReadString('\n')
-					if err != nil {
-						break // EOF
-					}
-					curlLines = append(curlLines, line)
+				curlInput, err := readCurlHidden(reader)
+				if err != nil {
+					return output.ErrUsage(err.Error())
 				}
 
-				if len(curlLines) == 0 {
+				if curlInput == "" {
 					return output.ErrUsage("no input received. Run: jsn auth login --curl '<curl command>'")
 				}
 
-				curlInput := strings.TrimSpace(strings.Join(curlLines, " "))
 				return loginFromCurl(cmd, cfg, authManager, curlInput)
 			}
 
@@ -247,6 +256,18 @@ type parsedCurl struct {
 	Username    string
 	Password    string
 	IsGCK       bool
+}
+
+// extractBaseURL extracts the base URL (scheme + host) from a full URL
+// e.g., "https://store.servicenow.com/appStore.do" -> "https://store.servicenow.com"
+func extractBaseURL(fullURL string) string {
+	// Remove any path, query, or fragment by finding the third slash
+	// https://host -> https://host (no change)
+	// https://host/path -> https://host
+	if idx := strings.Index(fullURL[8:], "/"); idx != -1 {
+		return fullURL[:8+idx]
+	}
+	return fullURL
 }
 
 // parseCurlCommand parses a curl command and extracts auth info
@@ -324,6 +345,127 @@ func parseCurlCommand(curlCmd string) (*parsedCurl, error) {
 	return result, nil
 }
 
+// filterServiceNowCookies strips non-essential cookies from a cookie string.
+// Only keeps cookies needed for ServiceNow session authentication, reducing
+// credential size to avoid keyring storage limits.
+func filterServiceNowCookies(cookies string) string {
+	essential := map[string]bool{
+		"JSESSIONID":           true,
+		"glide_session_store":  true,
+		"glide_user_route":     true,
+		"glide_user_activity":  true,
+		"glide_node_id_for_js": true,
+	}
+
+	var kept []string
+	for _, cookie := range strings.Split(cookies, ";") {
+		cookie = strings.TrimSpace(cookie)
+		if cookie == "" {
+			continue
+		}
+		name := cookie
+		if idx := strings.Index(cookie, "="); idx != -1 {
+			name = cookie[:idx]
+		}
+		if essential[strings.TrimSpace(name)] {
+			kept = append(kept, cookie)
+		}
+	}
+
+	if len(kept) == 0 {
+		return cookies // keep original if no essential cookies found
+	}
+	return strings.Join(kept, "; ")
+}
+
+// readCurlHidden reads a pasted curl command with terminal echo disabled.
+// Shows "********" while pasting, completes when a line doesn't end with \
+// (shell continuation), or on Ctrl+D/Ctrl+C. For non-terminal input, reads
+// readCurlHidden reads a curl command with echo disabled.
+// For interactive terminals, disables echo so pasted text is hidden.
+// For non-interactive input, reads lines from the buffered reader until EOF.
+func readCurlHidden(reader *bufio.Reader) (string, error) {
+	if !term.IsTerminal(int(syscall.Stdin)) {
+		// Non-interactive: read until EOF
+		var lines []string
+		for {
+			input, err := reader.ReadString('\n')
+			if err != nil {
+				break
+			}
+			lines = append(lines, input)
+		}
+		return joinCurlLines(lines), nil
+	}
+
+	// Disable echo only (keep output processing intact so prints render immediately)
+	fd := int(syscall.Stdin)
+	oldTermios, err := unix.IoctlGetTermios(fd, unix.TCGETS)
+	if err != nil {
+		// Fallback to normal read
+		var lines []string
+		for {
+			input, err := reader.ReadString('\n')
+			if err != nil {
+				break
+			}
+			lines = append(lines, input)
+		}
+		return joinCurlLines(lines), nil
+	}
+
+	newTermios := *oldTermios
+	newTermios.Lflag &^= unix.ECHO | unix.ICANON
+	newTermios.Cc[unix.VMIN] = 1
+	newTermios.Cc[unix.VTIME] = 0
+	_ = unix.IoctlSetTermios(fd, unix.TCSETS, &newTermios)
+
+	fmt.Fprint(os.Stderr, "  (input hidden) ")
+
+	var lines []string
+	var line []byte
+	buf := make([]byte, 1)
+
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			break
+		}
+		b := buf[0]
+
+		if b == 0x03 { // Ctrl+C
+			_ = unix.IoctlSetTermios(fd, unix.TCSETS, oldTermios)
+			fmt.Fprintln(os.Stderr)
+			return "", fmt.Errorf("cancelled")
+		}
+		if b == 0x04 { // Ctrl+D
+			if len(line) > 0 {
+				lines = append(lines, string(line))
+			}
+			break
+		}
+
+		if b == '\r' || b == '\n' {
+			lineStr := string(line)
+			lines = append(lines, lineStr)
+			line = nil
+
+			// If this line doesn't end with \, the curl command is complete
+			trimmed := strings.TrimRight(lineStr, " \t")
+			if !strings.HasSuffix(trimmed, "\\") {
+				break
+			}
+		} else {
+			line = append(line, b)
+		}
+	}
+
+	_ = unix.IoctlSetTermios(fd, unix.TCSETS, oldTermios)
+	fmt.Fprintln(os.Stderr, "✓")
+
+	return joinCurlLines(lines), nil
+}
+
 // base64Decode decodes a base64 string
 func base64Decode(s string) (string, error) {
 	data, err := base64.StdEncoding.DecodeString(s)
@@ -347,25 +489,29 @@ func loginFromCurl(cmd *cobra.Command, cfg *config.Config, authManager *auth.Man
 		return output.ErrUsage("could not find ServiceNow instance URL in curl command")
 	}
 
+	// Extract base URL (scheme + host) from the parsed URL for the profile
+	// The curl command may include a path (e.g., /appStore.do), but we only want the base URL
+	baseURL := extractBaseURL(parsed.InstanceURL)
+
 	// Ensure profile exists for this instance
 	profileName := cfg.DefaultProfile
 	if profileName == "" {
 		// Extract instance name from URL for profile name
-		parts := strings.Split(strings.TrimPrefix(parsed.InstanceURL, "https://"), ".")
+		parts := strings.Split(strings.TrimPrefix(baseURL, "https://"), ".")
 		profileName = parts[0]
 	}
 
 	profile, ok := cfg.Profiles[profileName]
 	if !ok {
 		profile = &config.Profile{
-			InstanceURL: parsed.InstanceURL,
+			InstanceURL: baseURL,
 		}
 		cfg.Profiles[profileName] = profile
 	}
 
-	// Update profile URL if different
-	if profile.InstanceURL != parsed.InstanceURL {
-		profile.InstanceURL = parsed.InstanceURL
+	// Update profile URL if different (using base URL, not full URL with path)
+	if profile.InstanceURL != baseURL {
+		profile.InstanceURL = baseURL
 	}
 
 	// Store credentials
@@ -379,7 +525,7 @@ func loginFromCurl(cmd *cobra.Command, cfg *config.Config, authManager *auth.Man
 		}
 		creds = &auth.Credentials{
 			Token:     parsed.Token,
-			Cookies:   parsed.Cookies,
+			Cookies:   filterServiceNowCookies(parsed.Cookies),
 			CreatedAt: time.Now().Unix(),
 		}
 		profile.AuthMethod = "gck"
@@ -527,7 +673,7 @@ and displays the results in a simple table format.`,
 				cfg.DefaultProfile = profileName
 
 				// Check if we have credentials
-				creds, err := authManager.GetCredentialsForProfile(profile.InstanceURL)
+				creds, err := authManager.GetCredentialsForProfile(profileName)
 				if err != nil || creds == nil || (creds.Token == "" && creds.AccessToken == "") {
 					result.StatusCode = 0
 					result.Status = "no credentials"

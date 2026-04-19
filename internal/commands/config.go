@@ -1,6 +1,7 @@
 package commands
 
 import (
+	"bufio"
 	"fmt"
 	"os"
 	"sort"
@@ -10,6 +11,7 @@ import (
 	"github.com/jacebenson/jsn/internal/auth"
 	"github.com/jacebenson/jsn/internal/config"
 	"github.com/jacebenson/jsn/internal/output"
+	"github.com/jacebenson/jsn/internal/tui"
 	"github.com/spf13/cobra"
 )
 
@@ -46,6 +48,7 @@ Config values can also be set via environment variables:
 	cmd.AddCommand(newConfigInitCommand())
 	cmd.AddCommand(newConfigProfilesCommand())
 	cmd.AddCommand(newConfigProfileCommand())
+	cmd.AddCommand(newConfigDeleteCommand())
 	cmd.AddCommand(newConfigSetCommand())
 	cmd.AddCommand(newConfigUnsetCommand())
 
@@ -264,15 +267,47 @@ func newConfigProfileCommand() *cobra.Command {
 
 			cfg := app.Config.(*config.Config)
 
-			// If no args, show current profile
+			// If no args, show interactive picker
 			if len(args) == 0 {
-				fmt.Printf("Current profile: %s\n", cfg.DefaultProfile)
-				if cfg.DefaultProfile != "" {
-					if profile, ok := cfg.Profiles[cfg.DefaultProfile]; ok {
-						fmt.Printf("Instance: %s\n", profile.InstanceURL)
-					}
+				if len(cfg.Profiles) == 0 {
+					fmt.Println("No profiles configured. Run: jsn setup")
+					return nil
 				}
-				return nil
+
+				// Build sorted list of profile names
+				names := make([]string, 0, len(cfg.Profiles))
+				for name := range cfg.Profiles {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+
+				// Build picker items
+				items := make([]tui.PickerItem, 0, len(names))
+				for _, name := range names {
+					p := cfg.Profiles[name]
+					authType := p.AuthMethod
+					if authType == "" {
+						authType = "basic"
+					}
+					desc := fmt.Sprintf("%s (%s)", p.InstanceURL, authType)
+					if name == cfg.DefaultProfile {
+						desc += " [active]"
+					}
+					items = append(items, tui.PickerItem{
+						ID:          name,
+						Title:       name,
+						Description: desc,
+					})
+				}
+
+				selected, err := tui.Pick("Switch profile", items)
+				if err != nil {
+					return err
+				}
+				if selected == nil {
+					return nil
+				}
+				args = []string{selected.ID}
 			}
 
 			// Switch profile
@@ -283,6 +318,12 @@ func newConfigProfileCommand() *cobra.Command {
 
 			cfg.DefaultProfile = newProfile
 
+			// Save to local config if one exists (local overrides global)
+			if cfg.LocalPath != "" {
+				if err := cfg.SaveLocal(); err != nil {
+					return output.ErrAPI(500, fmt.Sprintf("failed to save local config: %v", err))
+				}
+			}
 			if err := cfg.Save(); err != nil {
 				return output.ErrAPI(500, fmt.Sprintf("failed to save config: %v", err))
 			}
@@ -291,6 +332,85 @@ func newConfigProfileCommand() *cobra.Command {
 			return nil
 		},
 	}
+
+	return cmd
+}
+
+// newConfigDeleteCommand deletes a profile and its credentials
+func newConfigDeleteCommand() *cobra.Command {
+	var force bool
+
+	cmd := &cobra.Command{
+		Use:   "delete <name>",
+		Short: "Delete a profile and its stored credentials",
+		Long: `Delete a profile from configuration and remove its stored credentials
+from the system keyring (or fallback file).
+
+This permanently removes the profile and its authentication data.
+Use --force to skip the confirmation prompt.`,
+		Args: cobra.ExactArgs(1),
+		RunE: func(cmd *cobra.Command, args []string) error {
+			app := appctx.FromContext(cmd.Context())
+			if app == nil {
+				return output.ErrAuth("app not initialized")
+			}
+
+			cfg := app.Config.(*config.Config)
+			authManager := app.Auth.(*auth.Manager)
+			profileName := args[0]
+
+			profile, ok := cfg.Profiles[profileName]
+			if !ok {
+				return output.ErrNotFound(fmt.Sprintf("profile '%s' not found", profileName))
+			}
+
+			if !force {
+				fmt.Printf("Delete profile '%s' (%s)?\n", profileName, profile.InstanceURL)
+				fmt.Printf("This removes the profile and its stored credentials.\n")
+				fmt.Print("Are you sure? [y/N]: ")
+
+				reader := bufio.NewReader(os.Stdin)
+				response, _ := reader.ReadString('\n')
+				response = strings.TrimSpace(strings.ToLower(response))
+
+				if response != "y" && response != "yes" {
+					fmt.Println("Cancelled")
+					return nil
+				}
+			}
+
+			// Delete credentials from keyring
+			_ = authManager.DeleteCredentialsForProfile(profileName)
+
+			// Remove profile from config
+			delete(cfg.Profiles, profileName)
+
+			// If this was the default profile, clear or pick another
+			if cfg.DefaultProfile == profileName {
+				cfg.DefaultProfile = ""
+				for name := range cfg.Profiles {
+					cfg.DefaultProfile = name
+					break
+				}
+			}
+
+			// Save to both local and global
+			if cfg.LocalPath != "" {
+				_ = cfg.SaveLocal()
+			}
+			if err := cfg.Save(); err != nil {
+				return output.ErrAPI(500, fmt.Sprintf("failed to save config: %v", err))
+			}
+
+			fmt.Printf("Deleted profile '%s'\n", profileName)
+			if cfg.DefaultProfile != "" {
+				fmt.Printf("Active profile is now '%s'\n", cfg.DefaultProfile)
+			}
+			return nil
+		},
+	}
+
+	cmd.Flags().BoolVar(&force, "force", false, "Skip confirmation prompt")
 
 	return cmd
 }

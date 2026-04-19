@@ -28,10 +28,10 @@ func NewManager(cfg *config.Config) *Manager {
 }
 
 // credentialKey returns the storage key for credentials.
-// Uses the active profile's instance URL as the key.
+// Uses the profile name to ensure distinct profiles (even on the same instance) have separate credentials.
 func (m *Manager) credentialKey() string {
-	if profile := m.cfg.GetActiveProfile(); profile != nil {
-		return profile.InstanceURL
+	if m.cfg.DefaultProfile != "" {
+		return m.cfg.DefaultProfile
 	}
 	return ""
 }
@@ -106,6 +106,11 @@ func (m *Manager) DeleteCredentials() error {
 	return m.store.Delete(credKey)
 }
 
+// DeleteCredentialsForProfile removes credentials for a specific profile by name.
+func (m *Manager) DeleteCredentialsForProfile(profileName string) error {
+	return m.store.Delete(profileName)
+}
+
 // IsAuthenticated checks if there are valid credentials for the active profile.
 func (m *Manager) IsAuthenticated() bool {
 	// Check for OAuth token in environment variable first
@@ -173,11 +178,11 @@ func (c *Credentials) NeedsRefresh() bool {
 	return c.IsExpired(15 * 60)
 }
 
-// GetCredentialsForProfile retrieves credentials for a specific profile by instance URL.
+// GetCredentialsForProfile retrieves credentials for a specific profile by name.
 // Checks SERVICENOW_TOKEN env var first only if this is the active profile.
-func (m *Manager) GetCredentialsForProfile(instanceURL string) (*Credentials, error) {
+func (m *Manager) GetCredentialsForProfile(profileName string) (*Credentials, error) {
 	// Only check env var if this is the active profile
-	if instanceURL == m.credentialKey() {
+	if profileName == m.credentialKey() {
 		if token := os.Getenv("SERVICENOW_TOKEN"); token != "" {
 			return &Credentials{
 				Token:     token,
@@ -186,7 +191,7 @@ func (m *Manager) GetCredentialsForProfile(instanceURL string) (*Credentials, er
 		}
 	}
 
-	return m.store.Load(instanceURL)
+	return m.store.Load(profileName)
 }
 
 // UpdateLastTested updates the last_tested timestamp for the active profile's credentials.

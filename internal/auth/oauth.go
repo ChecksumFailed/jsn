@@ -13,7 +13,10 @@ import (
 	"net/url"
 	"os"
 	"strings"
+	"syscall"
 	"time"
+
+	"golang.org/x/term"
 )
 
 // DefaultOAuthClientID is the default ServiceNow OAuth client ID
@@ -206,11 +209,19 @@ func OAuthFlow(instanceURL string) (*Credentials, error) {
 	var authCode string
 	for {
 		fmt.Print("Authorization code: ")
-		input, err := reader.ReadString('\n')
-		if err != nil {
-			return nil, fmt.Errorf("reading authorization code: %w", err)
+		if term.IsTerminal(int(syscall.Stdin)) {
+			byteCode, err := term.ReadPassword(int(syscall.Stdin))
+			if err != nil {
+				input, _ := reader.ReadString('\n')
+				authCode = strings.TrimSpace(input)
+			} else {
+				authCode = string(byteCode)
+				fmt.Println(" ********")
+			}
+		} else {
+			input, _ := reader.ReadString('\n')
+			authCode = strings.TrimSpace(input)
 		}
-		authCode = strings.TrimSpace(input)
 		if authCode != "" {
 			break
 		}

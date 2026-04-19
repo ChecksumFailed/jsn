@@ -186,11 +186,6 @@ func (m pickerModel) Init() tea.Cmd {
 	return nil
 }
 
-// reloadWithQueryMsg signals that we need to reload items with a new query
-type reloadWithQueryMsg struct {
-	query string
-}
-
 func (m *pickerModel) loadMoreItems() tea.Cmd {
 	// Use queryable fetcher if available and we have an active query
 	if m.queryableFetcher != nil && (m.jumpBuffer != "" || m.searchQuery != "") {
@@ -439,25 +434,6 @@ func (m *pickerModel) adjustScroll() {
 	if m.scrollOffset < 0 {
 		m.scrollOffset = 0
 	}
-}
-
-func (m *pickerModel) filterItems(query string) {
-	if query == "" {
-		m.filtered = m.items
-		return
-	}
-
-	queryLower := strings.ToLower(query)
-	var filtered []PickerItem
-	for _, item := range m.items {
-		if strings.Contains(strings.ToLower(item.Title), queryLower) ||
-			strings.Contains(strings.ToLower(item.Description), queryLower) {
-			filtered = append(filtered, item)
-		}
-	}
-	m.filtered = filtered
-	m.cursor = 0
-	m.scrollOffset = 0
 }
 
 // applySearchFilter filters items based on the current search query

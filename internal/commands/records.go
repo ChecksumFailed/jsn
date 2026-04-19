@@ -17,24 +17,6 @@ import (
 	"github.com/spf13/cobra"
 )
 
-// extractInstanceName extracts the instance name from a ServiceNow URL
-func extractInstanceName(url string) string {
-	// Remove protocol and path
-	url = strings.TrimPrefix(url, "https://")
-	url = strings.TrimPrefix(url, "http://")
-	url = strings.TrimSuffix(url, "/")
-
-	// Get just the hostname
-	parts := strings.Split(url, "/")
-	host := parts[0]
-
-	// Remove .service-now.com if present
-	host = strings.TrimSuffix(host, ".service-now.com")
-	host = strings.TrimSuffix(host, ".servicenowservices.com")
-
-	return host
-}
-
 // recordsFlags holds the flags for the records root command.
 type recordsFlags struct {
 	table  string

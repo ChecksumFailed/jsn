@@ -44,7 +44,8 @@ func (c *Client) InspectFlow(ctx context.Context, flowID string) (*FlowInspectio
 		inspection.Version = resp.Result[0]
 
 		// Parse payload to extract trigger configuration (time, name, etc.)
-		if payload, ok := resp.Result[0]["payload"].(string); ok && payload != "" {
+		// Use getString because payload may be returned as a display_value/value object
+		if payload := getString(resp.Result[0], "payload"); payload != "" {
 			var payloadData map[string]interface{}
 			if err := json.Unmarshal([]byte(payload), &payloadData); err == nil {
 				// Extract trigger info from triggerInstances

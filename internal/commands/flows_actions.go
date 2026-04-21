@@ -459,6 +459,8 @@ func runFlowsAddAction(cmd *cobra.Command, args []string, flags flowsAddActionFl
 			"update_record": true,
 			"delete_record": true,
 			"lookup_record": true,
+			// Approval actions
+			"ask_approval": true,
 			// Utility actions
 			"log": true,
 			// Logic blocks
@@ -647,6 +649,10 @@ func printActionTypes(cmd *cobra.Command) error {
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-18s %s\n", nameStyle.Render("update_record"), mutedStyle.Render("Update fields (use for comments/work_notes)"))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-18s %s\n", nameStyle.Render("delete_record"), mutedStyle.Render("Remove a record"))
 	fmt.Fprintf(cmd.OutOrStdout(), "  %-18s %s\n", nameStyle.Render("lookup_record"), mutedStyle.Render("Query for records"))
+	fmt.Fprintln(cmd.OutOrStdout())
+
+	fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("Approval Actions:"))
+	fmt.Fprintf(cmd.OutOrStdout(), "  %-18s %s\n", nameStyle.Render("ask_approval"), mutedStyle.Render("Request approval from users"))
 	fmt.Fprintln(cmd.OutOrStdout())
 
 	fmt.Fprintln(cmd.OutOrStdout(), headerStyle.Render("Utility Actions:"))

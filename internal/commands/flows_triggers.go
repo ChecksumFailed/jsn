@@ -17,14 +17,15 @@ import (
 
 // flowsAddTriggerFlags holds the flags for the flows add-trigger command.
 type flowsAddTriggerFlags struct {
-	triggerType string
-	table       string
-	condition   string
-	schedule    string // daily, weekly, monthly, once, repeat
-	time        string // HH:MM:SS for daily/weekly/monthly
-	day         string // day of week (1-7) or day of month (1-31)
-	date        string // YYYY-MM-DD HH:MM:SS for once
-	repeat      string // duration for repeat (e.g., "1970-01-02 06:00:00")
+	triggerType   string
+	table         string
+	condition     string
+	schedule      string // daily, weekly, monthly, once, repeat
+	time          string // HH:MM:SS for daily/weekly/monthly
+	day           string // day of week (1-7) or day of month (1-31)
+	date          string // YYYY-MM-DD HH:MM:SS for once
+	repeat        string // duration for repeat (e.g., "1970-01-02 06:00:00")
+	withVariables string // catalog item name/sys_id for service_catalog triggers
 }
 
 // newFlowsTriggersCmd creates the flows triggers subcommand group.
@@ -186,6 +187,7 @@ Examples:
 	cmd.Flags().StringVar(&flags.day, "day", "", "Day of week (1-7) or day of month (1-31)")
 	cmd.Flags().StringVar(&flags.date, "date", "", "Date/time for once schedule (YYYY-MM-DD HH:MM:SS)")
 	cmd.Flags().StringVar(&flags.repeat, "repeat", "", "Repeat interval duration")
+	cmd.Flags().StringVar(&flags.withVariables, "with-variables", "", "Catalog item name/sys_id to fetch variables (for service_catalog triggers)")
 
 	return cmd
 }
@@ -363,17 +365,22 @@ func runFlowsAddTrigger(cmd *cobra.Command, flowID string, flags flowsAddTrigger
 		opts := sdk.CreateApplicationTriggerOptions{
 			FlowID:      flowID,
 			Application: flags.triggerType,
+			CatalogItem: flags.withVariables,
 		}
 		if err := sdkClient.CreateApplicationTrigger(cmd.Context(), opts); err != nil {
 			return fmt.Errorf("failed to create trigger: %w", err)
 		}
 
 		outputWriter := appCtx.Output.(*output.Writer)
-		return outputWriter.OK(map[string]interface{}{
+		result := map[string]interface{}{
 			"flow":        flowID,
 			"trigger":     flags.triggerType,
 			"application": flags.triggerType,
-		}, output.WithSummary(fmt.Sprintf("Added %s trigger to flow", flags.triggerType)))
+		}
+		if flags.withVariables != "" {
+			result["catalog_item"] = flags.withVariables
+		}
+		return outputWriter.OK(result, output.WithSummary(fmt.Sprintf("Added %s trigger to flow", flags.triggerType)))
 	}
 
 	// Map trigger type

@@ -3,7 +3,9 @@ package sdk
 import (
 	"context"
 	"fmt"
+	"net/url"
 	"strings"
+	"time"
 )
 
 // CreateRecordTriggerOptions holds options for creating a record-based trigger.
@@ -233,10 +235,12 @@ func (c *Client) CreateScheduledTrigger(ctx context.Context, opts CreateSchedule
 type CreateApplicationTriggerOptions struct {
 	FlowID      string // Flow sys_id or name
 	Application string // "service_catalog"
+	CatalogItem string // Optional: catalog item name/sys_id to fetch variables from
 }
 
 // CreateApplicationTrigger creates an application trigger for a flow using the GraphQL API.
 // Currently supports "service_catalog" triggers only.
+// If CatalogItem is provided, also adds a "Get Catalog Variables" action wired to the trigger.
 func (c *Client) CreateApplicationTrigger(ctx context.Context, opts CreateApplicationTriggerOptions) error {
 	if opts.FlowID == "" {
 		return fmt.Errorf("flow ID is required")
@@ -276,9 +280,76 @@ func (c *Client) CreateApplicationTrigger(ctx context.Context, opts CreateApplic
 		}
 	}()
 
-	// Build and send GraphQL mutation
+	// Build and send GraphQL mutation to create the trigger
 	triggerName := getTriggerName(opts.Application)
 	mutation := buildApplicationTriggerInsertMutation(flowSysID, triggerName, triggerDefID, opts.Application)
+
+	body := map[string]interface{}{
+		"variables": map[string]interface{}{},
+		"query":     mutation,
+	}
+
+	result, statusCode, err := c.RawRequest(ctx, "POST", "/api/now/graphql", body, nil)
+	if err != nil {
+		return fmt.Errorf("failed to execute GraphQL mutation: %w", err)
+	}
+	if statusCode != 200 {
+		return fmt.Errorf("GraphQL request failed with status %d", statusCode)
+	}
+
+	// Check for GraphQL errors
+	if resultMap, ok := result.(map[string]interface{}); ok {
+		if errors, hasErrors := resultMap["errors"]; hasErrors {
+			if errList, ok := errors.([]interface{}); ok && len(errList) > 0 {
+				if firstErr, ok := errList[0].(map[string]interface{}); ok {
+					return fmt.Errorf("GraphQL error: %s", getString(firstErr, "message"))
+				}
+			}
+		}
+	}
+
+	// If catalog item specified, add "Get Catalog Variables" action
+	if opts.CatalogItem != "" {
+		if err := c.addGetCatalogVariablesAction(ctx, flowSysID, opts.CatalogItem); err != nil {
+			return fmt.Errorf("failed to add catalog variables action: %w", err)
+		}
+	}
+
+	return nil
+}
+
+// addGetCatalogVariablesAction adds a "Get Catalog Variables" action to the flow
+// and wires it to the Service Catalog trigger's request_item output.
+func (c *Client) addGetCatalogVariablesAction(ctx context.Context, flowSysID, catalogItem string) error {
+	// Resolve catalog item to get sys_id and display name
+	var catalogItemSysID, catalogItemName string
+
+	// Try to find the catalog item by name or sys_id using GetRecord
+	record, err := c.GetRecord(ctx, "sc_cat_item", catalogItem)
+	if err != nil {
+		// Try finding by name
+		query := url.Values{}
+		query.Set("sysparm_query", fmt.Sprintf("name=%s", catalogItem))
+		query.Set("sysparm_limit", "1")
+		resp, err := c.Get(ctx, "sc_cat_item", query)
+		if err != nil {
+			return fmt.Errorf("catalog item not found: %s", catalogItem)
+		}
+		if len(resp.Result) > 0 {
+			catalogItemSysID = getString(resp.Result[0], "sys_id")
+			catalogItemName = getString(resp.Result[0], "name")
+		}
+	} else {
+		catalogItemSysID = getString(record, "sys_id")
+		catalogItemName = getString(record, "name")
+	}
+
+	if catalogItemSysID == "" {
+		return fmt.Errorf("catalog item not found: %s", catalogItem)
+	}
+
+	// Build GraphQL mutation to add the action
+	mutation := buildGetCatalogVariablesMutation(flowSysID, catalogItemSysID, catalogItemName)
 
 	body := map[string]interface{}{
 		"variables": map[string]interface{}{},
@@ -528,4 +599,45 @@ func buildApplicationTriggerInsertMutation(flowSysID, triggerName, triggerDefID,
     __typename
   }
 }`, flowSysID, flowSysID, triggerName, triggerDefID, appType)
+}
+
+// buildGetCatalogVariablesMutation builds the GraphQL mutation to add a "Get Catalog Variables" action
+// to a flow with a Service Catalog trigger. It wires the action to the trigger's request_item output.
+func buildGetCatalogVariablesMutation(flowSysID, catalogItemSysID, catalogItemName string) string {
+	// Generate a unique UI identifier for the action
+	actionID := generateUIUniqueIdentifier()
+
+	// Build the template_catalog_item JSON value
+	templateValue := fmt.Sprintf(`{"display":"%s","value":"%s","data_source":"sc_cat_item"}`,
+		catalogItemName, catalogItemSysID)
+
+	return fmt.Sprintf(`mutation {
+  global {
+    snFlowDesigner {
+      flow(flowPatch: {flowId: "%s", labelCache: {insert: [{name: "Service Catalog_1.request_item", label: "Trigger - Service Catalog➛Requested Item Record", reference: "sc_req_item", reference_display: "Requested Item", type: "reference", base_type: "reference", attributes: "element_mapping_provider=com.glide.flow_design.action.data.FlowDesignVariableMapper,default_search_field=number,", usedInstances: [{uiUniqueIdentifier: "%s", inputName: "requested_item"}], choices: {}}]}, actions: {insert: [{uiUniqueIdentifier: "%s", type: "action", actionId: "a9e5444e73303300c1b30e4efaf6a7b7", name: "Get Catalog Variables", inputs: [{name: "requested_item", value: {schemaless: false, schemalessValue: "", value: "{{Service Catalog_1.request_item}}"}}, {name: "template_catalog_item", value: {schemaless: false, schemalessValue: "", value: "%s"}}]}]}}) {
+        id
+        actions {
+          inserts {
+            sysId
+            uiUniqueIdentifier
+            __typename
+          }
+          updates
+          deletes
+          __typename
+        }
+        __typename
+      }
+      __typename
+    }
+    __typename
+  }
+}`, flowSysID, actionID, actionID, templateValue)
+}
+
+// generateUIUniqueIdentifier generates a unique identifier for flow designer elements.
+func generateUIUniqueIdentifier() string {
+	// Simple UUID-like generation - in production this would use a proper UUID library
+	// For now, use a timestamp-based approach
+	return fmt.Sprintf("jsn-%d", time.Now().UnixNano())
 }

@@ -62,6 +62,9 @@ This command creates:
   - sys_ux_screen_type (Home screen collection)
   - sys_ux_screen (Default Home screen)
   - sys_ux_app_route (maps /home to the Home screen)
+  - sys_ux_page_property (×5) — chrome_header, chrome_footer, chrome_toolbar, chrome_tab, wbApplicabilityConfigId
+  - sys_ux_applicability (audience for menu visibility)
+  - Custom sys_ux_macroponent extending Page Template with a Heading component
 
 After creation, open the workspace from the Workspaces menu in the
 Unified Navigator, or visit: /now/<path>/home
@@ -297,6 +300,26 @@ func runWorkspaceCreate(cmd *cobra.Command, flags workspaceCreateFlags) error {
 		if err != nil {
 			return fmt.Errorf("failed to create page property %s: %w", prop.name, err)
 		}
+	}
+
+	// ─── Step 9: Create applicability for menu visibility ──────────────
+	applicability, err := sdkClient.CreateRecord(ctx, "sys_ux_applicability", map[string]interface{}{
+		"name": fmt.Sprintf("Audience for app %s", path),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create applicability: %w", err)
+	}
+	applicabilitySysID := getString(applicability, "sys_id")
+
+	_, err = sdkClient.CreateRecord(ctx, "sys_ux_page_property", map[string]interface{}{
+		"name":        "wbApplicabilityConfigId",
+		"page":        registrySysID,
+		"type":        "string",
+		"value":       applicabilitySysID,
+		"unique_name": fmt.Sprintf("%s.%s.root.global.wbApplicabilityConfigId", scopePrefix, registrySysID),
+	})
+	if err != nil {
+		return fmt.Errorf("failed to create applicability page property: %w", err)
 	}
 
 	result := map[string]any{

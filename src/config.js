@@ -50,6 +50,7 @@ function loadFromFile(cfg, filePath, source) {
     }
     if (fileCfg.default_profile) {
       cfg.defaultProfile = fileCfg.default_profile;
+      cfg.activeProfile = fileCfg.default_profile;
       cfg.sources.default_profile = source;
     }
     if (fileCfg.profiles && typeof fileCfg.profiles === 'object') {
@@ -134,8 +135,9 @@ export function saveLocalConfig(cfg) {
 }
 
 export function getEffectiveInstance(cfg) {
-  if (cfg.activeProfile && cfg.profiles[cfg.activeProfile] && cfg.profiles[cfg.activeProfile].instance_url) {
-    return cfg.profiles[cfg.activeProfile].instance_url;
+  const name = cfg.activeProfile || cfg.defaultProfile;
+  if (name && cfg.profiles[name] && cfg.profiles[name].instance_url) {
+    return cfg.profiles[name].instance_url;
   }
   return cfg.instanceURL || '';
 }

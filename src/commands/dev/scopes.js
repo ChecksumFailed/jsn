@@ -1,0 +1,96 @@
+import { formatRecordForDisplay, getStringField } from '../../helpers.js';
+
+export function scopesCmd(wrap) {
+  return {
+    command: 'scopes [subcommand]',
+    aliases: ['scope', 'sc'],
+    describe: 'Manage application scopes',
+    builder: (yargs) => {
+      return yargs
+        .command({
+          command: 'list',
+          aliases: ['ls'],
+          describe: 'List application scopes',
+          builder: (y) => y
+            .option('query', { type: 'string', describe: 'Encoded query string' })
+            .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns' })
+            .option('limit', { alias: 'l', type: 'number', default: 20, describe: 'Max records' }),
+          handler: wrap(async (argv, app) => {
+            const columns = argv.columns ? argv.columns.split(',') : ['name', 'scope', 'short_description', 'active'];
+            const params = new URLSearchParams();
+            params.set('sysparm_limit', String(argv.limit));
+            params.set('sysparm_display_value', 'all');
+            params.set('sysparm_fields', ['sys_id', ...columns].join(','));
+            const q = argv.query ? argv.query + '^ORDERBYDESCsys_updated_on' : 'ORDERBYDESCsys_updated_on';
+            params.set('sysparm_query', q);
+            const records = await app.sdk.list('sys_scope', params);
+            app.ok({
+              table: 'sys_scope',
+              count: records.length,
+              columns,
+              records: records.map(r => formatRecordForDisplay(r, columns)),
+              context: { instance_url: app.getEffectiveInstance() },
+            }, { summary: `${records.length} scope(s)` });
+          }),
+        })
+        .command({
+          command: 'show <scope>',
+          aliases: ['get'],
+          describe: 'Show a scope',
+          handler: wrap(async (argv, app) => {
+            const params = new URLSearchParams();
+            params.set('sysparm_query', `scope=${argv.scope}`);
+            params.set('sysparm_limit', '1');
+            params.set('sysparm_display_value', 'all');
+            const records = await app.sdk.list('sys_scope', params);
+            if (records.length === 0) {
+              throw new Error(`Scope not found: ${argv.scope}`);
+            }
+            app.ok(records[0], { summary: `Scope ${argv.scope}` });
+          }),
+        })
+        .command({
+          command: 'set <scope>',
+          describe: 'Set the current application scope',
+          handler: wrap(async (argv, app) => {
+            const params = new URLSearchParams();
+            params.set('sysparm_query', `scope=${argv.scope}`);
+            params.set('sysparm_limit', '1');
+            params.set('sysparm_fields', 'sys_id,scope');
+            const records = await app.sdk.list('sys_scope', params);
+            if (records.length === 0) {
+              throw new Error(`Scope not found: ${argv.scope}`);
+            }
+            const scopeSysID = getStringField(records[0], 'sys_id');
+            // Update user preference
+            const user = await app.sdk.list('sys_user', new URLSearchParams({
+              sysparm_query: 'user_name=javascript:gs.getUserName()',
+              sysparm_limit: '1',
+              sysparm_fields: 'sys_id',
+            }));
+            if (user.length === 0) {
+              throw new Error('Could not determine current user');
+            }
+            const userSysID = getStringField(user[0], 'sys_id');
+            const prefParams = new URLSearchParams();
+            prefParams.set('sysparm_query', `user=${userSysID}^name=apps.current_app`);
+            prefParams.set('sysparm_limit', '1');
+            const prefs = await app.sdk.list('sys_user_preference', prefParams);
+            if (prefs.length > 0) {
+              await app.sdk.update('sys_user_preference', getStringField(prefs[0], 'sys_id'), { value: scopeSysID });
+            } else {
+              await app.sdk.create('sys_user_preference', {
+                user: userSysID,
+                name: 'apps.current_app',
+                value: scopeSysID,
+                type: 'string',
+              });
+            }
+            app.ok({ scope: argv.scope, sys_id: scopeSysID }, { summary: `Current scope: ${argv.scope}` });
+          }),
+        })
+
+    },
+    handler: () => {},
+  };
+}

@@ -1,0 +1,221 @@
+// Generic dev subcommand builder for table-based CRUD
+
+import { formatRecordForDisplay, getStringField, isHexString } from '../../helpers.js';
+import { getCurrentUser, getCurrentApplication } from '../../context.js';
+import readline from 'node:readline';
+
+function vowelArticle(word) {
+  const first = word.charAt(0).toLowerCase();
+  return first === 'a' || first === 'e' || first === 'i' || first === 'o' || first === 'u' ? 'an' : 'a';
+}
+
+function toSingular(name, explicitSingular) {
+  if (explicitSingular) return explicitSingular;
+  if (name.endsWith('ies')) return name.slice(0, -3) + 'y';
+  if (name.endsWith('es') && !name.endsWith('ses')) return name.slice(0, -2);
+  if (name.endsWith('s') && !name.endsWith('ss')) return name.slice(0, -1);
+  return name;
+}
+
+async function getCurrentScope(sdk) {
+  try {
+    const user = await getCurrentUser(sdk);
+    if (!user) return 'global';
+    const app = await getCurrentApplication(sdk, user.sys_id);
+    return app?.scope || 'global';
+  } catch {
+    return 'global';
+  }
+}
+
+async function checkScope(sdk, recordScope) {
+  const currentScope = await getCurrentScope(sdk);
+  if (currentScope === 'global') return null;
+  if (currentScope === recordScope) return null;
+  return { currentScope, recordScope };
+}
+
+export function buildDevCmd(name, table, aliases, defaultColumns, wrap, opts = {}) {
+  const showFields = opts.showFields || defaultColumns;
+  const singular = toSingular(name, opts.singular);
+  const readOnly = opts.readOnly || false;
+  const scopeValidation = opts.scopeValidation || false;
+
+  const builder = (yargs) => {
+    let y = yargs
+      .command({
+        command: 'list',
+        aliases: ['ls'],
+        describe: `List ${name}`,
+        builder: (y) => y
+          .option('query', { type: 'string', describe: 'Encoded query string' })
+          .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns' })
+          .option('limit', { alias: 'l', type: 'number', default: 20, describe: 'Max records' }),
+        handler: wrap(async (argv, app) => {
+          const columns = argv.columns ? argv.columns.split(',') : defaultColumns;
+          const params = new URLSearchParams();
+          params.set('sysparm_limit', String(argv.limit));
+          params.set('sysparm_display_value', 'all');
+          params.set('sysparm_fields', ['sys_id', ...columns].join(','));
+          const q = argv.query ? argv.query + '^ORDERBYDESCsys_updated_on' : 'ORDERBYDESCsys_updated_on';
+          params.set('sysparm_query', q);
+          const records = await app.sdk.list(table, params);
+          app.ok({
+            table,
+            count: records.length,
+            columns,
+            records: records.map(r => formatRecordForDisplay(r, columns)),
+            context: { instance_url: app.getEffectiveInstance() },
+          }, { summary: `${records.length} ${name}(s)` });
+        }),
+      })
+      .command({
+        command: 'show <identifier>',
+        aliases: ['get'],
+        describe: `Show ${vowelArticle(singular)} ${singular} by name or sys_id`,
+        handler: wrap(async (argv, app) => {
+          const id = argv.identifier;
+          const queryField = isHexString(id) && id.length === 32 ? 'sys_id' : 'name';
+          const params = new URLSearchParams();
+          params.set('sysparm_query', `${queryField}=${id}`);
+          params.set('sysparm_limit', '1');
+          params.set('sysparm_display_value', 'all');
+            // Always include sys_id for record detection and hyperlinks
+            const fetchFields = showFields && showFields.length > 0
+              ? ['sys_id', ...showFields]
+              : ['sys_id'];
+            params.set('sysparm_fields', [...new Set(fetchFields)].join(','));
+          const records = await app.sdk.list(table, params);
+          if (records.length === 0) {
+            throw new Error(`${singular} not found: ${id}`);
+          }
+          records[0]._context = {
+            instance_url: app.getEffectiveInstance(),
+            table,
+          };
+
+          if (opts.onShow) {
+            await opts.onShow(records[0], app);
+          }
+
+          const breadcrumbs = [
+            { action: 'list', cmd: `jsn dev ${name} list`, description: `Back to all ${name}` },
+          ];
+
+          if (!readOnly) {
+            breadcrumbs.unshift(
+              { action: 'delete', cmd: `jsn dev ${name} delete ${id}`, description: `Delete this ${singular}` },
+              { action: 'update', cmd: `jsn dev ${name} update ${id} --data '{...}'`, description: `Update this ${singular}` }
+            );
+          }
+
+          app.ok(records[0], {
+            summary: `${singular}: ${getStringField(records[0], 'name') || id}`,
+            breadcrumbs,
+          });
+        }),
+      });
+
+    if (!readOnly) {
+      y = y
+        .command({
+          command: 'create',
+          describe: `Create a new ${singular}`,
+          builder: (y) => y.option('data', { type: 'string', demandOption: true, describe: 'JSON data' }),
+          handler: wrap(async (argv, app) => {
+            const recordData = JSON.parse(argv.data);
+            const record = await app.sdk.create(table, recordData);
+            app.ok(record, {
+              summary: `Created ${singular}`,
+              breadcrumbs: [
+                { action: 'show', cmd: `jsn dev ${name} show ${getStringField(record, 'name') || getStringField(record, 'sys_id')}`, description: `View the new ${singular}` },
+              ],
+            });
+          }),
+        })
+        .command({
+          command: 'update <identifier>',
+          describe: `Update ${vowelArticle(singular)} ${singular}`,
+          builder: (y) => y.option('data', { type: 'string', demandOption: true, describe: 'JSON data' }),
+          handler: wrap(async (argv, app) => {
+            const id = argv.identifier;
+            const queryField = isHexString(id) && id.length === 32 ? 'sys_id' : 'name';
+            const findParams = new URLSearchParams();
+            findParams.set('sysparm_query', `${queryField}=${id}`);
+            findParams.set('sysparm_limit', '1');
+            const records = await app.sdk.list(table, findParams);
+            if (records.length === 0) {
+              throw new Error(`${singular} not found: ${id}`);
+            }
+            const sysID = getStringField(records[0], 'sys_id');
+            const recordScope = getStringField(records[0], 'sys_scope');
+
+            if (scopeValidation) {
+              const scopeErr = await checkScope(app.sdk, recordScope);
+              if (scopeErr) {
+                throw new Error(`record is in scope '${scopeErr.recordScope}', but your current scope is '${scopeErr.currentScope}'. Switch scope first: jsn dev scopes set ${scopeErr.recordScope}`);
+              }
+            }
+
+            const recordData = JSON.parse(argv.data);
+            const updated = await app.sdk.update(table, sysID, recordData);
+            app.ok(updated, { summary: `Updated ${singular} ${id}` });
+          }),
+        })
+        .command({
+          command: 'delete <identifier>',
+          describe: `Delete ${vowelArticle(singular)} ${singular}`,
+          builder: (y) => y.option('force', { type: 'boolean', default: false, describe: 'Skip confirmation' }),
+          handler: wrap(async (argv, app) => {
+            const id = argv.identifier;
+            const queryField = isHexString(id) && id.length === 32 ? 'sys_id' : 'name';
+            const findParams = new URLSearchParams();
+            findParams.set('sysparm_query', `${queryField}=${id}`);
+            findParams.set('sysparm_limit', '1');
+            const records = await app.sdk.list(table, findParams);
+            if (records.length === 0) {
+              throw new Error(`${singular} not found: ${id}`);
+            }
+            const sysID = getStringField(records[0], 'sys_id');
+            const recordName = getStringField(records[0], 'name') || id;
+            const recordScope = getStringField(records[0], 'sys_scope');
+
+            if (scopeValidation) {
+              const scopeErr = await checkScope(app.sdk, recordScope);
+              if (scopeErr) {
+                throw new Error(`record is in scope '${scopeErr.recordScope}', but your current scope is '${scopeErr.currentScope}'. Switch scope first: jsn dev scopes set ${scopeErr.recordScope}`);
+              }
+            }
+
+            if (!argv.force && process.stdout.isTTY && process.stdin.isTTY) {
+              const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+              const answer = await new Promise((resolve) => {
+                rl.question(`Delete ${singular} '${recordName}'? (y/N): `, resolve);
+              });
+              rl.close();
+              const response = answer.trim().toLowerCase();
+              if (response !== 'y' && response !== 'yes') {
+                throw new Error('Deletion cancelled');
+              }
+            }
+
+            await app.sdk.delete(table, sysID);
+            app.ok({ name: recordName, sys_id: sysID, deleted: true }, { summary: `Deleted ${singular} '${recordName}'` });
+          }),
+        });
+    }
+
+    return y;
+  };
+
+  return {
+    command: `${name} [subcommand]`,
+    aliases: aliases || [],
+    describe: `Manage ${name}`,
+    builder,
+    handler: (argv) => {
+      if (argv.help) return;
+      argv.showHelp?.();
+    },
+  };
+}

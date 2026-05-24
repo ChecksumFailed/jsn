@@ -1,28 +1,15 @@
-# Binaries for programs and plugins
-*.exe
-*.exe~
-*.dll
-*.so
-*.dylib
-
-# Test binary, built with `go test -c`
-*.test
-
-# Output of the go coverage tool
-*.out
-
 # Compiled binaries
 /jsn
 /main
 bin/*
 !bin/jsn.js
 
-# Dependency directories
-vendor/
+# Dependencies
+node_modules/
 
-# Go workspace file
-go.work
-go.work.sum
+# Logs
+*.log
+npm-debug.log*
 
 # IDE
 .idea/
@@ -35,7 +22,7 @@ go.work.sum
 .DS_Store
 Thumbs.db
 
-# Local config (if any)
+# Local config
 .env
 .env.local
 .servicenow/
@@ -47,10 +34,10 @@ opencode.json
 .agents/
 skills-lock.json
 test_modes.sh
+
 # Temporary files
 *.tmp
 *.bak
-*.log
 tmp/
 
 # Build artifacts

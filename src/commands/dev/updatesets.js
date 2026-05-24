@@ -1,0 +1,97 @@
+import { formatRecordForDisplay, getStringField } from '../../helpers.js';
+
+export function updateSetsCmd(wrap) {
+  return {
+    command: 'updatesets [subcommand]',
+    aliases: ['updateset', 'us'],
+    describe: 'Manage update sets',
+    builder: (yargs) => {
+      return yargs
+        .command({
+          command: 'list',
+          aliases: ['ls'],
+          describe: 'List update sets',
+          builder: (y) => y
+            .option('query', { type: 'string', describe: 'Encoded query string' })
+            .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns' })
+            .option('limit', { alias: 'l', type: 'number', default: 20, describe: 'Max records' }),
+          handler: wrap(async (argv, app) => {
+            const columns = argv.columns ? argv.columns.split(',') : ['name', 'state', 'application'];
+            const params = new URLSearchParams();
+            params.set('sysparm_limit', String(argv.limit));
+            params.set('sysparm_display_value', 'all');
+            params.set('sysparm_fields', ['sys_id', ...columns].join(','));
+            const q = argv.query ? argv.query + '^ORDERBYDESCsys_updated_on' : 'ORDERBYDESCsys_updated_on';
+            params.set('sysparm_query', q);
+            const records = await app.sdk.list('sys_update_set', params);
+            app.ok({
+              table: 'sys_update_set',
+              count: records.length,
+              columns,
+              records: records.map(r => formatRecordForDisplay(r, columns)),
+              context: { instance_url: app.getEffectiveInstance() },
+            }, { summary: `${records.length} update set(s)` });
+          }),
+        })
+        .command({
+          command: 'show <name>',
+          aliases: ['get'],
+          describe: 'Show an update set',
+          handler: wrap(async (argv, app) => {
+            const params = new URLSearchParams();
+            params.set('sysparm_query', `name=${argv.name}`);
+            params.set('sysparm_limit', '1');
+            params.set('sysparm_display_value', 'all');
+            const records = await app.sdk.list('sys_update_set', params);
+            if (records.length === 0) {
+              throw new Error(`Update set not found: ${argv.name}`);
+            }
+            app.ok(records[0], { summary: `Update set ${argv.name}` });
+          }),
+        })
+        .command({
+          command: 'set <name>',
+          describe: 'Set the current update set',
+          handler: wrap(async (argv, app) => {
+            const params = new URLSearchParams();
+            params.set('sysparm_query', `name=${argv.name}`);
+            params.set('sysparm_limit', '1');
+            params.set('sysparm_fields', 'sys_id,name');
+            const records = await app.sdk.list('sys_update_set', params);
+            if (records.length === 0) {
+              throw new Error(`Update set not found: ${argv.name}`);
+            }
+            const sysID = getStringField(records[0], 'sys_id');
+            // Update user preference
+            const user = await app.sdk.list('sys_user', new URLSearchParams({
+              sysparm_query: 'user_name=javascript:gs.getUserName()',
+              sysparm_limit: '1',
+              sysparm_fields: 'sys_id',
+            }));
+            if (user.length === 0) {
+              throw new Error('Could not determine current user');
+            }
+            const userSysID = getStringField(user[0], 'sys_id');
+            // Find or create preference
+            const prefParams = new URLSearchParams();
+            prefParams.set('sysparm_query', `user=${userSysID}^name=sys_update_set`);
+            prefParams.set('sysparm_limit', '1');
+            const prefs = await app.sdk.list('sys_user_preference', prefParams);
+            if (prefs.length > 0) {
+              await app.sdk.update('sys_user_preference', getStringField(prefs[0], 'sys_id'), { value: sysID });
+            } else {
+              await app.sdk.create('sys_user_preference', {
+                user: userSysID,
+                name: 'sys_update_set',
+                value: sysID,
+                type: 'string',
+              });
+            }
+            app.ok({ update_set: argv.name, sys_id: sysID }, { summary: `Current update set: ${argv.name}` });
+          }),
+        })
+
+    },
+    handler: () => {},
+  };
+}

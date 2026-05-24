@@ -22,7 +22,7 @@ function getDefaultColumns(table) {
 export function recordsCmd(wrap) {
   return {
     command: 'records <subcommand>',
-    describe: 'Query and manage records in any table',
+    describe: 'Query and manage records in any table (e.g. "records list --table incident --query priority=1")',
     builder: (yargs) => {
       return yargs
         .command({

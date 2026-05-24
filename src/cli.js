@@ -139,4 +139,6 @@ export const cli = yargs(hideBin(process.argv))
   .version(false)
   .strictCommands()
   .strictOptions(false)
-  .epilogue('LEARN MORE\n  Use "jsn <command> --help" for more information about a command.');
+  .epilogue('TIPS\n'
+    + '  --query is available on every list command (e.g. "incidents list --query priority=1")\n'
+    + '  Use "jsn <command> --help" for details, or "jsn <command> list --help" for list options');

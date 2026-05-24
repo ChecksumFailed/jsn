@@ -4,7 +4,7 @@ export function ticketsCmd(wrap) {
   return {
     command: 'tickets [subcommand]',
     aliases: ['ticket'],
-    describe: 'Query generic tickets',
+    describe: 'Query generic tickets (e.g. "tickets list --query active=true")',
     builder: (yargs) => {
       return yargs
         .command({

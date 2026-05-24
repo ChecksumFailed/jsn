@@ -12,8 +12,8 @@ export function logsCmd(wrap) {
           aliases: ['ls'],
           describe: 'List system logs',
           builder: (y) => y
-            .option('query', { type: 'string', describe: 'Encoded query string' })
-            .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns' })
+            .option('query', { type: 'string', describe: 'Encoded query (e.g. "nameLIKEincident" or "active=true")' })
+            .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns (e.g. "number,short_description")' })
             .option('limit', { alias: 'l', type: 'number', default: 50, describe: 'Max records' }),
           handler: wrap(async (argv, app) => {
             const columns = argv.columns ? argv.columns.split(',') : ['level', 'message', 'source', 'created'];

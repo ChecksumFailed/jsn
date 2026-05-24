@@ -12,8 +12,8 @@ export function ticketsCmd(wrap) {
           aliases: ['ls'],
           describe: 'List tickets',
           builder: (y) => y
-            .option('query', { type: 'string', describe: 'Encoded query string' })
-            .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns' })
+            .option('query', { type: 'string', describe: 'Encoded query (e.g. "active=true^priority=1")' })
+            .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns (e.g. "number,short_description,priority")' })
             .option('limit', { alias: 'l', type: 'number', default: 20, describe: 'Max records' })
             .option('offset', { alias: 'o', type: 'number', default: 0, describe: 'Offset' }),
           handler: wrap(async (argv, app) => {
@@ -73,7 +73,7 @@ export function ticketsCmd(wrap) {
         .command({
           command: 'create',
           describe: 'Create a new ticket',
-          builder: (y) => y.option('data', { type: 'string', demandOption: true, describe: 'JSON data' }),
+          builder: (y) => y.option('data', { type: 'string', demandOption: true, describe: 'JSON fields (e.g. \'{"state":"2","priority":"1"}\')' }),
           handler: wrap(async (argv, app) => {
             const recordData = JSON.parse(argv.data);
             const record = await app.sdk.create('ticket', recordData);
@@ -83,7 +83,7 @@ export function ticketsCmd(wrap) {
         .command({
           command: 'update <number>',
           describe: 'Update a ticket',
-          builder: (y) => y.option('data', { type: 'string', demandOption: true, describe: 'JSON data' }),
+          builder: (y) => y.option('data', { type: 'string', demandOption: true, describe: 'JSON fields (e.g. \'{"state":"2","priority":"1"}\')' }),
           handler: wrap(async (argv, app) => {
             const recordData = JSON.parse(argv.data);
             const findParams = new URLSearchParams();

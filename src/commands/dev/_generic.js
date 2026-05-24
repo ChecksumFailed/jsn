@@ -61,8 +61,8 @@ export function buildDevCmd(name, table, aliases, defaultColumns, wrap, opts = {
         aliases: ['ls'],
         describe: `List ${name}`,
         builder: (y) => y
-          .option('query', { type: 'string', describe: 'Encoded query string' })
-          .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns' })
+          .option('query', { type: 'string', describe: 'Encoded query (e.g. "nameLIKEincident" or "active=true^priority=1")' })
+          .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns (e.g. "name,label,super_class")' })
           .option('limit', { alias: 'l', type: 'number', default: 20, describe: 'Max records' }),
         handler: wrap(async (argv, app) => {
           const columns = argv.columns ? argv.columns.split(',') : defaultColumns;
@@ -123,7 +123,7 @@ export function buildDevCmd(name, table, aliases, defaultColumns, wrap, opts = {
         .command({
           command: 'create',
           describe: `Create a new ${singular}`,
-          builder: (y) => y.option('data', { type: 'string', demandOption: true, describe: 'JSON data' }),
+          builder: (y) => y.option('data', { type: 'string', demandOption: true, describe: 'JSON fields (e.g. \'{"state":"2"}\')' }),
           handler: wrap(async (argv, app) => {
             const recordData = JSON.parse(argv.data);
             const record = await app.sdk.create(table, recordData);
@@ -138,7 +138,7 @@ export function buildDevCmd(name, table, aliases, defaultColumns, wrap, opts = {
         .command({
           command: 'update <identifier>',
           describe: `Update ${vowelArticle(singular)} ${singular}`,
-          builder: (y) => y.option('data', { type: 'string', demandOption: true, describe: 'JSON data' }),
+          builder: (y) => y.option('data', { type: 'string', demandOption: true, describe: 'JSON fields (e.g. \'{"state":"2"}\')' }),
           handler: wrap(async (argv, app) => {
             const id = argv.identifier;
             const queryField = isHexString(id) && id.length === 32 ? 'sys_id' : 'name';

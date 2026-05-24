@@ -30,8 +30,8 @@ export function recordsCmd(wrap) {
           describe: 'List records from a table',
           builder: (y) => y
             .option('table', { type: 'string', demandOption: true, describe: 'Table name' })
-            .option('query', { type: 'string', describe: 'Encoded query string' })
-            .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns' })
+            .option('query', { type: 'string', describe: 'Encoded query (e.g. "nameLIKEincident" or "active=true")' })
+            .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns (e.g. "number,short_description")' })
             .option('limit', { type: 'number', default: 20, describe: 'Max records' })
             .option('offset', { type: 'number', default: 0, describe: 'Offset' }),
           handler: wrap(async (argv, app) => {
@@ -80,7 +80,7 @@ export function recordsCmd(wrap) {
           builder: (y) => y
             .option('table', { type: 'string', demandOption: true, describe: 'Table name' })
             .option('sys-id', { type: 'string', demandOption: true, describe: 'Record sys_id' })
-            .option('columns', { type: 'string', describe: 'Comma-separated columns' }),
+            .option('columns', { type: 'string', describe: 'Comma-separated columns (e.g. "number,short_description")' }),
           handler: wrap(async (argv, app) => {
             const params = new URLSearchParams();
             params.set('sysparm_query', `sys_id=${argv['sys-id']}`);
@@ -99,7 +99,7 @@ export function recordsCmd(wrap) {
           describe: 'Create a new record',
           builder: (y) => y
             .option('table', { type: 'string', demandOption: true, describe: 'Table name' })
-            .option('data', { type: 'string', demandOption: true, describe: 'JSON data' }),
+            .option('data', { type: 'string', demandOption: true, describe: 'JSON fields (e.g. \'{"state":"2"}\')' }),
           handler: wrap(async (argv, app) => {
             const recordData = JSON.parse(argv.data);
             const record = await app.sdk.create(argv.table, recordData);
@@ -112,7 +112,7 @@ export function recordsCmd(wrap) {
           builder: (y) => y
             .option('table', { type: 'string', demandOption: true, describe: 'Table name' })
             .option('sys-id', { type: 'string', demandOption: true, describe: 'Record sys_id' })
-            .option('data', { type: 'string', demandOption: true, describe: 'JSON data' }),
+            .option('data', { type: 'string', demandOption: true, describe: 'JSON fields (e.g. \'{"state":"2"}\')' }),
           handler: wrap(async (argv, app) => {
             const recordData = JSON.parse(argv.data);
             const record = await app.sdk.update(argv.table, argv['sys-id'], recordData);

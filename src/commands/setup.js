@@ -1,5 +1,5 @@
 import readline from 'node:readline';
-import { getEffectiveInstance, normalizeInstanceURL, setProfile } from '../config.js';
+import { getEffectiveInstance, normalizeInstanceURL, saveConfig, setProfile } from '../config.js';
 
 export function setupCmd(wrap) {
   return {
@@ -21,6 +21,10 @@ export function setupCmd(wrap) {
 
       const profileName = await ask('Profile name (default): ') || 'default';
       await setProfile(app.config, profileName, { instance_url: instance });
+      // Set as active profile so subsequent commands know which instance to use
+      app.config.activeProfile = profileName;
+      app.config.defaultProfile = profileName;
+      saveConfig(app.config);
 
       const loginNow = await ask('Login now? [Y/n]: ');
       if (!loginNow || loginNow.toLowerCase() !== 'n') {

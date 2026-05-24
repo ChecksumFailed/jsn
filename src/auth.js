@@ -177,10 +177,20 @@ export class AuthManager {
     // Try to open browser
     const open = (await import('node:child_process')).spawn;
     const platform = process.platform;
-    const cmd = platform === 'darwin' ? 'open' : platform === 'win32' ? 'start' : 'xdg-open';
-    const child = open(cmd, [authURL], { detached: true, stdio: 'ignore' });
+    let cmd, args;
+    if (platform === 'darwin') {
+      cmd = 'open';
+      args = [authURL];
+    } else if (platform === 'win32') {
+      cmd = 'cmd';
+      args = ['/c', 'start', authURL];
+    } else {
+      cmd = 'xdg-open';
+      args = [authURL];
+    }
+    const child = open(cmd, args, { detached: true, stdio: 'ignore' });
     child.on('error', () => {
-      // xdg-open not installed — user will open the URL manually
+      // Browser open command not available — user will open the URL manually
     });
     child.unref();
 

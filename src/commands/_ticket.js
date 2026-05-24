@@ -9,7 +9,7 @@ export function buildTicketCommands(table, displayName, alias, defaultColumns, s
   return {
     command: `${displayName} [subcommand]`,
     aliases: [table, alias],
-    describe: `Manage ${displayName}`,
+    describe: `Manage ${displayName} (e.g. "${displayName} list --query priority=1")`,
     builder: (yargs) => {
       return yargs
         .command({

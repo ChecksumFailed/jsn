@@ -213,7 +213,7 @@ export function buildDevCmd(name, table, aliases, defaultColumns, wrap, opts = {
   return {
     command: `${name} [subcommand]`,
     aliases: aliases || [],
-    describe: `Manage ${name}`,
+    describe: `Manage ${name} (e.g. "${name} list --query nameLIKEincident")`,
     builder,
     handler: (argv) => {
       if (argv.help) return;

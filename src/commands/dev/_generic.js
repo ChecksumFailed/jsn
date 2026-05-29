@@ -3,6 +3,8 @@
 import { formatRecordForDisplay, getStringField, isHexString } from '../../helpers.js';
 import { getCurrentUser, getCurrentApplication } from '../../context.js';
 import readline from 'node:readline';
+import { select } from '@inquirer/prompts';
+import { isTTY, FormatAuto } from '../../output.js';
 
 function vowelArticle(word) {
   const first = word.charAt(0).toLowerCase();
@@ -82,12 +84,88 @@ export function buildDevCmd(name, table, aliases, defaultColumns, wrap, opts = {
           .option('columns', { alias: 'c', type: 'string', describe: 'Comma-separated columns (e.g. "name,label,super_class")' })
           .option('limit', { alias: 'l', type: 'number', default: 20, describe: 'Max records' }),
         handler: wrap(async (argv, app) => {
+          const query = argv.query || '';
           const columns = argv.columns ? argv.columns.split(',') : defaultColumns;
+          const limit = argv.limit;
+
+          // Interactive picker in TTY with auto format and no explicit query
+          const interactive = isTTY(process.stdout) && isTTY(process.stdin);
+          if (interactive && app.output.getFormat() === FormatAuto && !query) {
+            const pickerColumns = ['sys_id', 'name', ...columns.filter(c => c !== 'name' && c !== 'sys_id')];
+            const pickerParams = new URLSearchParams();
+            pickerParams.set('sysparm_limit', String(limit));
+            pickerParams.set('sysparm_display_value', 'all');
+            pickerParams.set('sysparm_fields', pickerColumns.join(','));
+            pickerParams.set('sysparm_query', 'ORDERBYDESCsys_updated_on');
+
+            const pickerRecords = await app.sdk.list(table, pickerParams);
+            if (pickerRecords.length === 0) {
+              app.ok({
+                table,
+                count: 0,
+                columns: pickerColumns,
+                records: [],
+                pagination: { limit, offset: 0 },
+                context: { instance_url: app.getEffectiveInstance() },
+              }, {
+                summary: `0 ${name}(s)`,
+                breadcrumbs: buildHints(name, singular, readOnly),
+              });
+              return;
+            }
+
+            const choices = pickerRecords.map(r => {
+              const recordName = getStringField(r, 'name') || getStringField(r, 'sys_id');
+              const scope = getStringField(r, 'sys_scope') || '';
+              let label = recordName;
+              if (scope && scope !== 'global') label += ` [${scope}]`;
+              return { name: label, value: recordName };
+            });
+
+            let selectedName;
+            try {
+              selectedName = await select({
+                message: `Select ${vowelArticle(singular)} ${singular}:`,
+                choices,
+              });
+            } catch (err) {
+              if (err.name === 'ExitPromptError' || (err.message && err.message.includes('force closed'))) {
+                return;
+              }
+              throw err;
+            }
+
+            if (selectedName) {
+              const showParams = new URLSearchParams();
+              showParams.set('sysparm_query', `name=${selectedName}`);
+              showParams.set('sysparm_display_value', 'all');
+              showParams.set('sysparm_limit', '1');
+              const showRecords = await app.sdk.list(table, showParams);
+              if (showRecords.length === 0) {
+                throw new Error(`${singular} not found: ${selectedName}`);
+              }
+              const record = showRecords[0];
+              record._context = { instance_url: app.getEffectiveInstance(), table };
+              if (opts.onShow) {
+                await opts.onShow(record, app);
+              }
+              app.ok(record, {
+                summary: `${singular.charAt(0).toUpperCase() + singular.slice(1)}: ${selectedName}`,
+                breadcrumbs: [
+                  ...(readOnly ? [] : [{ action: 'update', cmd: `jsn dev ${name} update ${selectedName} --data '{...}'`, description: `Update this ${singular}` }]),
+                  { action: 'list', cmd: `jsn dev ${name} list`, description: `Back to all ${name}` },
+                ],
+              });
+            }
+            return;
+          }
+
+          // Non-interactive: text/table output
           const params = new URLSearchParams();
-          params.set('sysparm_limit', String(argv.limit));
+          params.set('sysparm_limit', String(limit));
           params.set('sysparm_display_value', 'all');
           params.set('sysparm_fields', ['sys_id', ...columns].join(','));
-          const q = argv.query ? argv.query + '^ORDERBYDESCsys_updated_on' : 'ORDERBYDESCsys_updated_on';
+          const q = query ? query + '^ORDERBYDESCsys_updated_on' : 'ORDERBYDESCsys_updated_on';
           params.set('sysparm_query', q);
           const records = await app.sdk.list(table, params);
           app.ok({

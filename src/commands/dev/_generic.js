@@ -9,6 +9,23 @@ function vowelArticle(word) {
   return first === 'a' || first === 'e' || first === 'i' || first === 'o' || first === 'u' ? 'an' : 'a';
 }
 
+function buildHints(name, singular, readOnly) {
+  const crumbs = [];
+  if (!readOnly) {
+    crumbs.push({
+      action: 'create',
+      cmd: `jsn dev ${name} create --name ... --label "..."`,
+      description: `Create ${vowelArticle(singular)} ${singular}`,
+    });
+  }
+  crumbs.push({
+    action: 'show',
+    cmd: `jsn dev ${name} show <name_or_sys_id>`,
+    description: `Show ${singular} details`,
+  });
+  return crumbs;
+}
+
 function toSingular(name, explicitSingular) {
   if (explicitSingular) return explicitSingular;
   if (name.endsWith('ies')) return name.slice(0, -3) + 'y';
@@ -79,7 +96,10 @@ export function buildDevCmd(name, table, aliases, defaultColumns, wrap, opts = {
             columns,
             records: records.map(r => formatRecordForDisplay(r, columns)),
             context: { instance_url: app.getEffectiveInstance() },
-          }, { summary: `${records.length} ${name}(s)` });
+          }, {
+            summary: `${records.length} ${name}(s)`,
+            breadcrumbs: buildHints(name, singular, readOnly),
+          });
         }),
       })
       .command({

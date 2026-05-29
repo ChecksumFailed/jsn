@@ -103,7 +103,7 @@ export const cli = yargs(hideBin(process.argv))
 
     // Check auth for non-auth commands
     const cmd = argv._[0];
-    const skipAuth = ['help', 'version', 'setup', 'auth', undefined].includes(cmd);
+    const skipAuth = ['help', 'version', 'setup', 'auth', 'profiles', 'profile', undefined].includes(cmd);
     if (!skipAuth) {
       const instance = getEffectiveInstance(cfg);
       if (!argv.app.auth.isAuthenticated() && instance) {

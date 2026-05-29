@@ -79,6 +79,56 @@ export class SDKClient {
     }
   }
 
+  // _fetchWithAuth makes an authenticated fetch and returns the Response object.
+  async _fetchWithAuth(endpoint, opts = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+    try {
+      const req = new Request(endpoint, { ...opts, signal: controller.signal });
+      await this._setAuth(req);
+      return await fetch(req);
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  // rawRequest is like request() but returns the response text as-is (no JSON parsing).
+  // Used for non-JSON endpoints like sys.scripts.do (returns HTML).
+  async rawRequest(endpoint, opts = {}) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), this.timeout);
+
+    try {
+      const req = new Request(endpoint, {
+        ...opts,
+        signal: controller.signal,
+      });
+      if (opts.body && typeof opts.body === 'string') {
+        req.headers.set('Content-Type', opts.headers?.['Content-Type'] || 'application/x-www-form-urlencoded');
+      }
+      await this._setAuth(req);
+
+      const resp = await fetch(req);
+      const body = await resp.text();
+
+      if (!resp.ok) {
+        throw errAPI(resp.status, body || resp.statusText);
+      }
+
+      return body;
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        throw errNetwork(new Error('Request timed out'));
+      }
+      if (err.code === 'ECONNREFUSED' || err.code === 'ENOTFOUND' || err.code === 'ETIMEDOUT') {
+        throw errNetwork(err);
+      }
+      throw err;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
   async list(table, params = {}) {
     const query = new URLSearchParams(params).toString();
     const endpoint = `${this.baseURL}/api/now/table/${table}${query ? '?' + query : ''}`;
@@ -285,6 +335,119 @@ export class SDKClient {
     }
 
     return 0;
+  }
+
+  // ─── Background Script Execution (3-step OAuth session flow) ───
+
+  /**
+   * Execute a background script on the ServiceNow instance via sys.scripts.do.
+   * Uses a 3-step session-establishment flow compatible with OAuth tokens:
+   *  1. Make a REST API call to get session cookies
+   *  2. GET /sys.scripts.do with cookies to extract the CSRF token (sysparm_ck)
+   *  3. POST /sys.scripts.do with the script, CSRF token, and cookies
+   *
+   * @param {string} script - JavaScript code to execute
+   * @returns {Promise<string>} The script's output text
+   */
+  async executeScript(script) {
+    // Step 1: Warm up the session by hitting any REST API — this makes
+    // ServiceNow issue session cookies for subsequent UI page requests.
+    // We capture cookies to forward them (Node.js fetch() has no built-in cookie jar).
+    const cookies = await this._warmSession();
+
+    // Step 2: GET /sys.scripts.do to extract the CSRF token from the HTML form.
+    const csrfToken = await this._getScriptsPageCSRF(cookies);
+
+    // Step 3: POST the script with form data including the CSRF token.
+    const endpoint = `${this.baseURL}/sys.scripts.do`;
+    const formBody = new URLSearchParams();
+    formBody.set('script', script);
+    formBody.set('sysparm_ck', csrfToken);
+    formBody.set('runscript', 'Run script');
+    formBody.set('sys_scope', 'global');
+    formBody.set('record_for_rollback', 'on');
+    formBody.set('quota_managed_transaction', 'on');
+
+    const html = await this.rawRequest(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/x-www-form-urlencoded',
+        ...(cookies ? { Cookie: cookies } : {}),
+      },
+      body: formBody.toString(),
+    });
+
+    return this._extractScriptOutput(html);
+  }
+
+  async _warmSession() {
+    try {
+      const endpoint = `${this.baseURL}/api/now/table/sys_user?sysparm_limit=1`;
+      const resp = await this._fetchWithAuth(endpoint, { method: 'GET', headers: { Accept: 'application/json' } });
+      // Extract cookies for subsequent UI page requests
+      const setCookie = resp.headers.getSetCookie?.() || resp.headers.get('set-cookie');
+      if (setCookie) {
+        return Array.isArray(setCookie) ? setCookie.join('; ') : setCookie;
+      }
+      return '';
+    } catch {
+      return '';
+    }
+  }
+
+  async _getScriptsPageCSRF(cookies) {
+    const endpoint = `${this.baseURL}/sys.scripts.do`;
+    const html = await this.rawRequest(endpoint, {
+      method: 'GET',
+      headers: cookies ? { Cookie: cookies } : {},
+    });
+
+    // Extract <input name="sysparm_ck" type="hidden" value="TOKEN"> from HTML
+    const marker = '<input name="sysparm_ck" type="hidden" value="';
+    const idx = html.indexOf(marker);
+    if (idx !== -1) {
+      const start = idx + marker.length;
+      const end = html.indexOf('"', start);
+      if (end !== -1) return html.substring(start, end);
+      const altEnd = html.indexOf('">', start);
+      if (altEnd !== -1) return html.substring(start, altEnd);
+    }
+
+    // Fallback: try without type attribute
+    const altMarker = 'name="sysparm_ck" value="';
+    const altIdx = html.indexOf(altMarker);
+    if (altIdx !== -1) {
+      const start = altIdx + altMarker.length;
+      const end = html.indexOf('"', start);
+      if (end !== -1) return html.substring(start, end);
+    }
+
+    // Not authorized or couldn't extract token
+    if (html.includes('not authorized') || html.includes('login.do')) {
+      throw new Error('Not authorized to access scripts page. Your OAuth token may not support UI sessions. Try the browser: ' + this.baseURL + '/sys.scripts.do');
+    }
+    throw new Error('Could not find CSRF token on scripts page (response: ' + html.substring(0, 200) + ')');
+  }
+
+  _extractScriptOutput(html) {
+    // Convert <BR> and <BR/> to newlines first
+    let out = html.replace(/<BR\s*\/?>/gi, '\n').replace(/<br\s*\/?>/gi, '\n');
+
+    // Find <PRE>...</PRE> content
+    const preMatch = out.match(/<PRE[^>]*>([\s\S]*?)<\/PRE>/i);
+    if (preMatch) {
+      out = preMatch[1];
+    }
+
+    // Strip remaining HTML tags
+    out = out.replace(/<[^>]+>/g, '');
+
+    // Clean up: decode HTML entities, trim lines
+    out = out.replace(/&amp;/g, '&').replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"');
+
+    // Trim each line and remove empty lines
+    const lines = out.split('\n').map(l => l.trim()).filter(l => l.length > 0);
+    return lines.join('\n');
   }
 }
 

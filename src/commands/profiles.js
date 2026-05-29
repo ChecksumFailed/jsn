@@ -2,7 +2,7 @@ import { saveConfig } from '../config.js';
 
 export function profilesCmd(wrap) {
   return {
-    command: 'profiles <subcommand>',
+    command: 'profiles [subcommand]',
     aliases: ['profile'],
     describe: 'Manage configuration profiles',
     builder: (yargs) => {
@@ -74,6 +74,18 @@ export function profilesCmd(wrap) {
         })
 
     },
-    handler: () => {},
+    handler: (argv) => {
+      // When no subcommand is given, show help
+      if (!argv._[1]) {
+        console.log('Manage your ServiceNow instance profiles.\n');
+        console.log('Usage: jsn profiles <list|show|use|remove> [options]\n');
+        console.log('Commands:');
+        console.log('  list           List all profiles');
+        console.log('  show [name]    Show profile details');
+        console.log('  use  <name>    Switch to a different profile');
+        console.log('  remove <name>  Remove a profile');
+        console.log('\nRun "jsn profiles <command> --help" for more details.');
+      }
+    },
   };
 }

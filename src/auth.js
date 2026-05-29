@@ -1,19 +1,28 @@
 // OAuth 2.0 with PKCE authentication
+// Credentials are stored in the OS keyring (shared with Go version via libsecret/secret-tool)
+// Falls back to file-based storage when keyring is unavailable.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import readline from 'node:readline';
+import { execSync } from 'node:child_process';
 import { globalConfigDir, normalizeInstanceURL } from './config.js';
 import { errAuth } from './errors.js';
 
 const DEFAULT_OAUTH_CLIENT_ID = '543e5655f77746a28228c6009a599dfb';
 const REDIRECT_URI = '/sdk-oauth.do';
 
+// Keychain constants — same as Go version (internal/auth/store.go)
+const KEYRING_SERVICE = 'servicenow-cli';
+const KEYRING_ATTR_SERVICE = 'service';
+const KEYRING_ATTR_USERNAME = 'username';
+
 function credentialsPath(instance) {
   const dir = path.join(globalConfigDir(), 'credentials');
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const filename = Buffer.from(instance).toString('base64url') + '.json';
+  // Match Go's filename encoding: replace :// and / and : with _
+  const filename = instance.replace(/:\/\//g, '_').replace(/\//g, '_').replace(/:/g, '_') + '.json';
   return path.join(dir, filename);
 }
 
@@ -40,7 +49,62 @@ function buildAuthURL(instanceURL, clientID, pkce) {
   return u.toString();
 }
 
+// ─── Keyring via secret-tool (libsecret, same backend as Go's go-keyring) ───
+
+function keyringLookup(instance) {
+  try {
+    const result = execSync(
+      `secret-tool lookup ${KEYRING_ATTR_SERVICE} ${KEYRING_SERVICE} ${KEYRING_ATTR_USERNAME} "${instance}"`,
+      { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf-8' }
+    );
+    const trimmed = result.trim();
+    if (!trimmed) return null;
+    const parsed = JSON.parse(trimmed);
+    // Normalize field names from Go's format to Node.js format
+    return {
+      auth_method: parsed.auth_method || 'oauth',
+      access_token: parsed.access_token || parsed.AccessToken || '',
+      refresh_token: parsed.refresh_token || parsed.RefreshToken || '',
+      expires_at: parsed.expires_at || parsed.ExpiresAt || 0,
+      created_at: parsed.created_at || parsed.CreatedAt || 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
+function keyringStore(instance, creds) {
+  try {
+    execSync(
+      `secret-tool store --label="Password for '${instance}' on '${KEYRING_SERVICE}'" ` +
+      `${KEYRING_ATTR_SERVICE} ${KEYRING_SERVICE} ${KEYRING_ATTR_USERNAME} "${instance}"`,
+      { stdio: ['pipe', 'ignore', 'ignore'], input: JSON.stringify(creds) }
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function keyringDelete(instance) {
+  try {
+    execSync(
+      `secret-tool clear ${KEYRING_ATTR_SERVICE} ${KEYRING_SERVICE} ${KEYRING_ATTR_USERNAME} "${instance}"`,
+      { stdio: 'ignore' }
+    );
+  } catch {
+    // ignore
+  }
+}
+
+// ─── File-based storage (fallback) ───
+
 function loadCredentials(instance) {
+  // Try keyring first (shared with Go version)
+  const keyringCreds = keyringLookup(instance);
+  if (keyringCreds) return keyringCreds;
+
+  // Fall back to file-based storage
   try {
     const data = fs.readFileSync(credentialsPath(instance), 'utf-8');
     return JSON.parse(data);
@@ -50,10 +114,14 @@ function loadCredentials(instance) {
 }
 
 function saveCredentials(instance, creds) {
-  fs.writeFileSync(credentialsPath(instance), JSON.stringify(creds, null, 2), { mode: 0o600 });
+  // Try keyring first, fall back to file
+  if (!keyringStore(instance, creds)) {
+    fs.writeFileSync(credentialsPath(instance), JSON.stringify(creds, null, 2), { mode: 0o600 });
+  }
 }
 
 function deleteCredentials(instance) {
+  keyringDelete(instance);
   try {
     fs.unlinkSync(credentialsPath(instance));
   } catch {

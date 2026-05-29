@@ -216,8 +216,19 @@ export function buildDevCmd(name, table, aliases, defaultColumns, wrap, opts = {
     describe: `Manage ${name} (e.g. "${name} list --query nameLIKEincident")`,
     builder,
     handler: (argv) => {
-      if (argv.help) return;
-      argv.showHelp?.();
+      // This handler only runs when no subcommand is matched (the default case).
+      // Show help for the subcommands available.
+      console.log(`Manage ${name} from the ${table} table.`);
+      console.log('');
+      console.log('Available subcommands:');
+      console.log('  list        List all records');
+      console.log('  show        Show record details');
+      if (!readOnly) {
+        console.log('  create      Create a new record');
+        console.log('  update      Update a record');
+        console.log('  delete      Delete a record');
+      }
+      console.log(`\nRun "jsn dev ${name} <command> --help" for details.`);
     },
   };
 }

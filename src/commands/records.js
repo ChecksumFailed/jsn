@@ -165,6 +165,34 @@ export function recordsCmd(wrap) {
             app.ok({ message: 'Record deleted', table: argv.table, sys_id: argv['sys-id'] }, { summary: `Deleted record from ${argv.table}` });
           }),
         })
+        .command({
+          command: 'inspect <table> <identifier>',
+          aliases: ['debug', 'diag'],
+          describe: 'Inspect a record: show audit history, business rules, and running flows',
+          builder: (y) => y
+            .positional('table', { describe: 'Table name (e.g. incident)', type: 'string' })
+            .positional('identifier', { describe: 'Record sys_id or number', type: 'string' }),
+          handler: wrap(async (argv, app) => {
+            const { inspectRecord, formatInspectOutput } = await import('../records/inspect.js');
+            const result = await inspectRecord(app, argv.table, argv.identifier);
+            const breadcrumbs = [
+              ...result.flows.map(f => ({
+                action: 'show',
+                cmd: `jsn dev flows show "${f.flow}"`,
+                description: `View flow details for ${f.flow}`,
+              })),
+              ...result.businessRules.slice(0, 5).map(br => ({
+                action: 'show',
+                cmd: `jsn dev rules show "${br.name}"`,
+                description: `View business rule: ${br.name}`,
+              })),
+            ];
+            app.ok({ ...result, _formatted: formatInspectOutput(result) }, {
+              summary: `Inspected ${argv.table} ${argv.identifier}`,
+              breadcrumbs,
+            });
+          }),
+        })
 
     },
     handler: () => {},
